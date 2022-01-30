@@ -17,6 +17,8 @@ export GROUP_ID=$(id -g)
 export options=()
 export targets=()
 
+export GEODESIC_ADDITIONAL_DOCKER_ARGS="{{getenv "GEODESIC_ADDITIONAL_DOCKER_ARGS" ""}}"
+
 function require_installed() {
 	if ! which $1 >/dev/null; then
 		echo "Cannot find $1 installed on this system. Please install and try again."
@@ -61,15 +63,28 @@ function use() {
 
 		if [ -n "$SSH_AUTH_SOCK" ]; then
 			if [ "${OS}" == 'Linux' ]; then
+				if [ "${SSH_AUTH_SOCK:0:4}" == "/tmp" ]; then
+					echo "The ssh-agent socket at ${SSH_AUTH_SOCK} is in your /tmp folder and does not map to Docker"
+					echo "Start your ssh-agent with 'TMPDIR=/var/tmp ssh-agent'"
+					echo "or something like this in your ~/.bashrc script:"
+					echo '(umask 066; ssh-agent -a $(mktemp -d -t ssh-XXXXXXXXXX --tmpdir=/var/tmp)/agent.$$ > "${SSH_AGENT_ENV}")'
+				else
 				# Bind-mount SSH agent socket into container (linux only)
-				DOCKER_ARGS+=(--volume "$SSH_AUTH_SOCK:$SSH_AUTH_SOCK"
-					--env SSH_AUTH_SOCK
+					local HOST_SOCK_DIR="$(dirname $SSH_AUTH_SOCK)"
+					local HOST_SOCK_NAME="$(basename $SSH_AUTH_SOCK)"
+					local DOCKER_SSH_FOLDER="/var/tmp"
+					local DOCKER_SSH_HOST_DIR="$DOCKER_SSH_FOLDER/host"
+					local DOCKER_SSH_HOST_SOCKET="$DOCKER_SSH_HOST_DIR/$HOST_SOCK_NAME"
+					DOCKER_ARGS+=(--volume="$HOST_SOCK_DIR:$DOCKER_SSH_HOST_DIR"
+						--env SSH_AUTH_SOCK_HOST="$DOCKER_SSH_HOST_SOCKET"
 					--env SSH_CLIENT
 					--env SSH_CONNECTION
 					--env SSH_TTY
 					--env USER
 					--env USER_ID
 					--env GROUP_ID)
+					echo "# Binding your SSH_AUTH_SOCK of $SSH_AUTH_SOCK to $DOCKER_SSH_HOST_SOCKET"
+				fi
 			elif [ "${OS}" == 'Darwin' ] && [ "${GEODESIC_MAC_FORWARD_SOCKET}" == 'true' ]; then
 				# Bind-mount SSH-agent socket (available in docker-for mac Edge 2.2 release)
 				# Note that the file/socket /run/host-services/ssh-auth.sock does not exist
@@ -82,6 +97,10 @@ function use() {
 		fi
 	else
 		DOCKER_ARGS=()
+	fi
+
+	if [ "${OS}" == 'Linux' ]; then
+		DOCKER_ARGS+=(--user="$(id -u):$(id -g)")
 	fi
 
 	if [ "${WITH_DOCKER}" == "true" ]; then
@@ -110,6 +129,11 @@ function use() {
 		if [ -f "${geodesic_default_env_file}" ]; then
 			DOCKER_ARGS+=(--env-file=${geodesic_default_env_file})
 		fi
+		# persist direnv between sessions by putting in $HOME/.geodesic/direnv folder
+		local geodesic_folder="$(dirname "$geodesic_default_env_file")"
+		local geodesic_direnv_folder=${geodesic_folder}/direnv
+		mkdir -p $geodesic_direnv_folder
+		DOCKER_ARGS+=(--volume="$geodesic_direnv_folder:/usr/share/xdg_data_home/direnv")
 	else
 		echo "# Disabling user customizations: GEODESIC_CUSTOMIZATION_DISABLED is set and not 'false'"
 		DOCKER_ARGS+=(--env GEODESIC_CUSTOMIZATION_DISABLED)
@@ -169,6 +193,7 @@ function use() {
 		--env DOCKER_IMAGE="${DOCKER_IMAGE%:*}"
 		--env DOCKER_NAME="${DOCKER_NAME}"
 		--env DOCKER_TAG="${DOCKER_TAG}"
+		--env GEODESIC_WORKDIR="${GEODESIC_WORKDIR}"
 		--workdir "${GEODESIC_WORKDIR}")
 
 	trap run_exit_hooks EXIT
@@ -184,7 +209,7 @@ function use() {
 		echo "# Starting new ${DOCKER_NAME} session from ${DOCKER_IMAGE}"
 		echo "# Exposing port ${GEODESIC_PORT}"
 		[ -z "${GEODESIC_DOCKER_EXTRA_ARGS}" ] || echo "# Launching with extra Docker args: ${GEODESIC_DOCKER_EXTRA_ARGS}"
-		docker run "${DOCKER_ARGS[@]}" ${GEODESIC_DOCKER_EXTRA_ARGS} ${DOCKER_IMAGE} -l $*
+		docker run "${DOCKER_ARGS[@]}" ${GEODESIC_DOCKER_EXTRA_ARGS} ${GEODESIC_ADDITIONAL_DOCKER_ARGS} ${DOCKER_IMAGE} -l $*
 	fi
 }
 
